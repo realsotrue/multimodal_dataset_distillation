@@ -16,28 +16,37 @@ from sklearn.metrics.pairwise import cosine_similarity
 from tqdm import tqdm
 import math
 
+from torch.utils.data import Dataset, DataLoader
+
 from transformers import BertTokenizer, BertConfig, BertModel
+from torchvision.datasets import ImageFolder
+
+import os
+from PIL import Image
+import torchvision.transforms as transforms
+
 import wandb
 
-from data import get_dataset_flickr, textprocess, textprocess_train
+#from data import textprocess, textprocess_train
+#from data import get_dataset_flickr
 from epoch import evaluate_synset, epoch, epoch_test, itm_eval
-from networks import CLIPModel_full, TextEncoder
+from networks import CLIPModel_full, TextEncoder, Our_Model_full
 from reparam_module import ReparamModule
 from utils import DiffAugment, ParamDiffAug, TensorDataset, get_dataset, get_network, get_eval_pool, get_time
 
 
-def shuffle_files(img_expert_files, txt_expert_files):
+def shuffle_files(img_expert_files, map_expert_files):
     # Check if both lists have the same length and if the lists are not empty
-    assert len(img_expert_files) == len(txt_expert_files), "Number of image files and text files does not match"
+    assert len(img_expert_files) == len(map_expert_files), "Number of image files and text files does not match"
     assert len(img_expert_files) != 0, "No files to shuffle"
     shuffled_indices = np.random.permutation(len(img_expert_files))
 
     # Apply the shuffled indices to both lists
     img_expert_files = np.take(img_expert_files, shuffled_indices)
-    txt_expert_files = np.take(txt_expert_files, shuffled_indices)
+    map_expert_files = np.take(map_expert_files, shuffled_indices)
     print(f"img_expert_files: {img_expert_files}")
-    print(f"txt_expert_files: {txt_expert_files}")
-    return img_expert_files, txt_expert_files
+    print(f"map_expert_files: {map_expert_files}")
+    return img_expert_files, map_expert_files
 
 def nearest_neighbor(sentences, query_embeddings, database_embeddings):
     """Find the nearest neighbors for a batch of embeddings.
@@ -78,12 +87,13 @@ def get_images_texts(n, dataset):
     idx_shuffle = np.random.permutation(len(dataset))[:n]
 
     # Initialize the text encoder
-    text_encoder = TextEncoder(args)
+    #text_encoder = TextEncoder(args)
 
     image_syn = torch.stack([dataset[i][0] for i in idx_shuffle])
-    text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device="cpu")
+    map_syn = torch.stack([dataset[i][1] for i in idx_shuffle])
+    #map_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device="cpu")
 
-    return image_syn, text_syn.float()
+    return image_syn, map_syn
 
 
 def load_or_process_file(file_type, process_func, args, data_source):
@@ -111,10 +121,30 @@ def load_or_process_file(file_type, process_func, args, data_source):
     return np.load(filename)
 
 
+class DualImageFolderDataset(Dataset):
+    def __init__(self, folder1_path, folder2_path, transform=None):
+        self.folder1_dataset = ImageFolder(root=folder1_path, transform=transform)
+        self.folder2_dataset = ImageFolder(root=folder2_path, transform=transform)
+        
+    def __len__(self):
+        return min(len(self.folder1_dataset), len(self.folder2_dataset))
+    
+    def __getitem__(self, idx):
+        img1, label1 = self.folder1_dataset[idx]
+        img2, label2 = self.folder2_dataset[idx]
+        return img1, img2
+
+
+
 def main(args):  
     ''' organize the real train dataset '''  
-    trainloader, testloader, train_dataset, test_dataset = get_dataset_flickr(args)
+    #trainloader, testloader, train_dataset, test_dataset = get_dataset_flickr(args)
 
+    train_dataset = DualImageFolderDataset(folder1_path='../seg/images_modified_1102_1000/original', 
+                            folder2_path='../seg/images_modified_1102_1000/attention', 
+                            transform=transforms.ToTensor())
+    testloader = DataLoader(train_dataset, batch_size=args.num_queries, shuffle=True)
+    '''
     train_sentences = train_dataset.get_all_captions() 
 
     data = load_or_process_file('text', textprocess, args, testloader)
@@ -124,7 +154,7 @@ def main(args):
     print("The shape of bert_test_embed: {}".format(bert_test_embed.shape))
     train_caption_embed = torch.from_numpy(train_caption['bert_test_embed']).cpu()
     print("The shape of train_caption_embed: {}".format(train_caption_embed.shape))
-
+    '''
     logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
     if args.zca and args.texture:
         raise AssertionError("Cannot use zca and texture together")
@@ -146,7 +176,7 @@ def main(args):
         args.dc_aug_param = None
 
     # wandb.init(mode="disabled")
-    wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
+    wandb.init(project='DD_segmentation', entity='realsotrue', config=args, name=args.name) #entity는 user id
     
     args.dsa_param = ParamDiffAug()
     zca_trans = args.zca_trans if args.zca else None
@@ -155,11 +185,13 @@ def main(args):
 
     print('Hyper-parameters: \n', args.__dict__)
     syn_lr_img = torch.tensor(args.lr_teacher_img).to(args.device)
-    syn_lr_txt = torch.tensor(args.lr_teacher_txt).to(args.device)
+    syn_lr_map = torch.tensor(args.lr_teacher_map).to(args.device)
 
     ''' initialize the synthetic data '''
-    image_syn, text_syn = get_images_texts(args.num_queries, train_dataset)
-    
+    #image_syn, map_syn = get_images_texts(args.num_queries, train_dataset)
+    image_syn, map_syn = next(iter(testloader))
+
+
     if args.pix_init == 'noise':
         mean = torch.tensor([-0.0626, -0.0221,  0.0680])
         std = torch.tensor([1.0451, 1.0752, 1.0539])
@@ -169,7 +201,7 @@ def main(args):
         print('Initialized synthetic image from random noise')
 
     if args.txt_init == 'noise':
-        text_syn = torch.normal(mean=-0.0094, std=0.5253, size=(args.num_queries, 768))
+        map_syn = torch.normal(mean=-0.0094, std=0.5253, size=(args.num_queries, 768))
         print('Initialized synthetic text from random noise')
 
 
@@ -179,16 +211,17 @@ def main(args):
     optimizer_img.zero_grad()
 
     syn_lr_img = syn_lr_img.to(args.device).requires_grad_(True)
-    syn_lr_txt = syn_lr_txt.to(args.device).requires_grad_(True)
-    optimizer_lr = torch.optim.SGD([syn_lr_img, syn_lr_txt], lr=args.lr_lr, momentum=0.5)
+    syn_lr_map = syn_lr_map.to(args.device).requires_grad_(True)
+    optimizer_lr = torch.optim.SGD([syn_lr_img, syn_lr_map], lr=args.lr_lr, momentum=0.5)
     
-    text_syn = text_syn.detach().to(args.device).requires_grad_(True)
-    optimizer_txt = torch.optim.SGD([text_syn], lr=args.lr_txt, momentum=0.5)
-    optimizer_txt.zero_grad()
-    sentence_list = nearest_neighbor(train_sentences, text_syn.detach().cpu(), train_caption_embed)
+    map_syn = map_syn.detach().to(args.device).requires_grad_(True)
+    optimizer_map = torch.optim.SGD([map_syn], lr=args.lr_txt, momentum=0.5)
+    optimizer_map.zero_grad()
+    #sentence_list = nearest_neighbor(train_sentences, map_syn.detach().cpu(), train_caption_embed)
     if args.draw:
-        wandb.log({"original_sentence_list": wandb.Html('<br>'.join(sentence_list))})
+        #wandb.log({"original_sentence_list": wandb.Html('<br>'.join(sentence_list))})
         wandb.log({"original_synthetic_images": wandb.Image(torch.nan_to_num(image_syn.detach().cpu()))})
+        wandb.log({"original_synthetic_maps": wandb.Image(torch.nan_to_num(map_syn.detach().cpu()))})
 
     criterion = nn.CrossEntropyLoss().to(args.device)
     print('%s training begins'%get_time())
@@ -199,29 +232,29 @@ def main(args):
 
 
     img_expert_files = []
-    txt_expert_files = []
+    map_expert_files = []
     n = 0
     while os.path.exists(os.path.join(expert_dir, "img_replay_buffer_{}.pt".format(n))):
         img_expert_files.append(os.path.join(expert_dir, "img_replay_buffer_{}.pt".format(n)))
-        txt_expert_files.append(os.path.join(expert_dir, "txt_replay_buffer_{}.pt".format(n)))
+        map_expert_files.append(os.path.join(expert_dir, "map_replay_buffer_{}.pt".format(n)))
         n += 1
     if n == 0:
         raise AssertionError("No buffers detected at {}".format(expert_dir))
     
-    img_expert_files, txt_expert_files = shuffle_files(img_expert_files, txt_expert_files)
+    img_expert_files, map_expert_files = shuffle_files(img_expert_files, map_expert_files)
     
     file_idx = 0
     expert_idx = 0
     print("loading file {}".format(img_expert_files[file_idx]))
-    print("loading file {}".format(txt_expert_files[file_idx]))
+    print("loading file {}".format(map_expert_files[file_idx]))
     
     img_buffer = torch.load(img_expert_files[file_idx])
-    txt_buffer = torch.load(txt_expert_files[file_idx])
+    map_buffer = torch.load(map_expert_files[file_idx])
 
     for it in tqdm(range(args.Iteration + 1)):
         save_this_it = True
 
-        wandb.log({"Progress": it}, step=it)
+        #wandb.log({"Progress": it}, step=it)
         ''' Evaluate synthetic data '''
         if it in eval_it_pool:
             print('-------------------------\nEvaluation\nimage_model_train = %s, text_model_train = %s, iteration = %d'%(args.image_encoder, args.text_encoder, it))
@@ -243,17 +276,19 @@ def main(args):
             txt_r_means = []
 
             r_means = []
+            '''
             for it_eval in range(args.num_eval):
-                net_eval = CLIPModel_full(args, eval_stage=args.transfer)
+                net_eval = Our_Model_full(args, eval_stage=args.transfer) #Our_Model_full로 변경
 
                 with torch.no_grad():
                     image_save = image_syn
-                    text_save = text_syn
-                image_syn_eval, text_syn_eval = copy.deepcopy(image_save.detach()), copy.deepcopy(text_save.detach()) # avoid any unaware modification
+                    map_save = map_syn
+                image_syn_eval, map_syn_eval = copy.deepcopy(image_save.detach()), copy.deepcopy(map_save.detach()) # avoid any unaware modification
 
                 args.lr_net = syn_lr_img.item()
+                
                 print(image_syn_eval.shape)
-                _, acc_train, val_result = evaluate_synset(it_eval, net_eval, image_syn_eval, text_syn_eval, testloader, args, bert_test_embed)
+                _, acc_train, val_result = evaluate_synset(it_eval, net_eval, image_syn_eval, map_syn_eval, testloader, args, bert_test_embed)
                 print('Evaluate_%02d: Img R@1 = %.4f, Img R@5 = %.4f, Img R@10 = %.4f, Img R@Mean = %.4f, Txt R@1 = %.4f, Txt R@5 = %.4f, Txt R@10 = %.4f, Txt R@Mean = %.4f, R@Mean = %.4f' % 
                     (it_eval, 
                     val_result['img_r1'], val_result['img_r5'], val_result['img_r10'], val_result['img_r_mean'], 
@@ -302,12 +337,15 @@ def main(args):
                 wandb.log({'Mean/img_r10': img_r10_mean, 'Std/img_r10': img_r10_std})
                 wandb.log({'Mean/img_r_mean': img_r_mean_mean, 'Std/img_r_mean': img_r_mean_std})
                 wandb.log({'Mean/r_mean': r_mean_mean, 'Std/r_mean': r_mean_std})
-
+                '''
         if it in eval_it_pool and (save_this_it or it % 1000 == 0):
             if args.draw:
                 with torch.no_grad():
+                    image_save = image_syn
+                    map_save = map_syn
+                    image_syn_eval, map_syn_eval = copy.deepcopy(image_save.detach()), copy.deepcopy(map_save.detach()) # avoid any unaware modification
                     image_save = image_syn_eval.cuda()
-                    text_save = text_syn_eval.cuda()
+                    map_save = map_syn_eval.cuda()
                     save_dir = os.path.join(".", "logged_files", args.dataset, wandb.run.name)
                     print("Saving to {}".format(save_dir))
 
@@ -315,12 +353,13 @@ def main(args):
                         os.makedirs(save_dir)
 
                     #torch.save(image_save, os.path.join(save_dir, "images_{}.pt".format(it)))
-                    #torch.save(text_save, os.path.join(save_dir, "labels_{}.pt".format(it)))
+                    #torch.save(map_save, os.path.join(save_dir, "labels_{}.pt".format(it)))
 
                     #torch.save(image_save, os.path.join(save_dir, "images_best.pt".format(it)))
-                    #torch.save(text_save, os.path.join(save_dir, "labels_best.pt".format(it)))
+                    #torch.save(map_save, os.path.join(save_dir, "labels_best.pt".format(it)))
 
-                    wandb.log({"Pixels": wandb.Histogram(torch.nan_to_num(image_syn.detach().cpu()))}, step=it)  # Move tensor to CPU before converting to NumPy
+                    wandb.log({"Pixels": wandb.Histogram(torch.nan_to_num(image_syn.detach().cpu()))})  # Move tensor to CPU before converting to NumPy
+                    wandb.log({"Maps": wandb.Histogram(torch.nan_to_num(map_syn.detach().cpu()))})  # Move tensor to CPU before converting to NumPy
 
                     if args.ipc < 50 or args.force_save:
                         upsampled = image_save[:90]
@@ -328,15 +367,20 @@ def main(args):
                             upsampled = torch.repeat_interleave(upsampled, repeats=4, dim=2)
                             upsampled = torch.repeat_interleave(upsampled, repeats=4, dim=3)
                         grid = torchvision.utils.make_grid(upsampled, nrow=10, normalize=True, scale_each=True)
-                        sentence_list = nearest_neighbor(train_sentences, text_syn.cpu(), train_caption_embed)
-                        sentence_list = sentence_list[:90]
+                        grid2 = torchvision.utils.make_grid(upsampled, nrow=10, normalize=True, scale_each=True)
+                        #sentence_list = nearest_neighbor(train_sentences, map_syn.cpu(), train_caption_embed)
+                        #sentence_list = sentence_list[:90]
                         torchvision.utils.save_image(grid, os.path.join(save_dir, "synthetic_images_{}.png".format(it)))
-                        
-                        with open(os.path.join(save_dir, "synthetic_sentences_{}.txt".format(it)), "w") as file:
-                            file.write('\n'.join(sentence_list))
-                        wandb.log({"Synthetic_Images": wandb.Image(torch.nan_to_num(grid.detach().cpu()))}, step=it) 
-                        wandb.log({'Synthetic_Pixels': wandb.Histogram(torch.nan_to_num(image_save.detach().cpu()))}, step=it) 
-                        wandb.log({"Synthetic_Sentences": wandb.Html('<br>'.join(sentence_list))}, step=it)
+                        torchvision.utils.save_image(grid2, os.path.join(save_dir, "synthetic_maps_{}.png".format(it)))
+
+
+                        #with open(os.path.join(save_dir, "synthetic_sentences_{}.txt".format(it)), "w") as file:
+                        #    file.write('\n'.join(sentence_list))
+                        wandb.log({"Synthetic_Images": wandb.Image(torch.nan_to_num(grid.detach().cpu()))})
+                        wandb.log({"Synthetic_Maps": wandb.Image(torch.nan_to_num(grid2.detach().cpu()))}) 
+                        wandb.log({'Synthetic_Pixels': wandb.Histogram(torch.nan_to_num(image_save.detach().cpu()))})
+                        wandb.log({'Synthetic_Maps': wandb.Histogram(torch.nan_to_num(map_save.detach().cpu()))}) 
+                        #wandb.log({"Synthetic_Sentences": wandb.Html('<br>'.join(sentence_list))}, step=it)
                         print("finish saving images")
 
                         for clip_val in [2.5]:
@@ -375,64 +419,64 @@ def main(args):
                             wandb.log({"Clipped_Reconstructed_Images/std_{}".format(clip_val): wandb.Image(
                                 torch.nan_to_num(grid.detach().cpu()))}, step=it)
 
-        wandb.log({"Synthetic_LR_Image": syn_lr_img.detach().cpu()}, step=it)
-        wandb.log({"Synthetic_LR_Text": syn_lr_txt.detach().cpu()}, step=it)
+        wandb.log({"Synthetic_LR_Image": syn_lr_img.detach().cpu()})
+        wandb.log({"Synthetic_LR_Map": syn_lr_map.detach().cpu()})
 
         torch.cuda.empty_cache()
-        student_net = CLIPModel_full(args)
+        student_net = Our_Model_full(args) #Our_Model_full 써야됨
         img_student_net = ReparamModule(student_net.image_encoder.to('cpu')).to('cuda')
-        txt_student_net = ReparamModule(student_net.text_projection.to('cpu')).to('cuda')
+        map_student_net = ReparamModule(student_net.map_encoder.to('cpu')).to('cuda')
 
         if args.distributed:
             img_student_net = torch.nn.DataParallel(img_student_net)
-            txt_student_net = torch.nn.DataParallel(txt_student_net)
+            map_student_net = torch.nn.DataParallel(map_student_net)
 
         img_student_net.train()
-        txt_student_net.train()
+        map_student_net.train()
         img_num_params = sum([np.prod(p.size()) for p in (img_student_net.parameters())])
-        txt_num_params = sum([np.prod(p.size()) for p in (txt_student_net.parameters())])
+        map_num_params = sum([np.prod(p.size()) for p in (map_student_net.parameters())])
 
 
         img_expert_trajectory = img_buffer[expert_idx]
-        txt_expert_trajectory = txt_buffer[expert_idx]
+        map_expert_trajectory = map_buffer[expert_idx]
         expert_idx += 1
         if expert_idx == len(img_buffer):
             expert_idx = 0
             file_idx += 1
             if file_idx == len(img_expert_files): 
                 file_idx = 0
-                img_expert_files, txt_expert_files = shuffle_files(img_expert_files, txt_expert_files)
+                img_expert_files, map_expert_files = shuffle_files(img_expert_files, map_expert_files)
             print("loading file {}".format(img_expert_files[file_idx]))
-            print("loading file {}".format(txt_expert_files[file_idx]))
+            print("loading file {}".format(map_expert_files[file_idx]))
             if args.max_files != 1:
                 del img_buffer
-                del txt_buffer
+                del map_buffer
                 img_buffer = torch.load(img_expert_files[file_idx])
-                txt_buffer = torch.load(txt_expert_files[file_idx])
+                map_buffer = torch.load(map_expert_files[file_idx])
 
         start_epoch = np.random.randint(0, args.max_start_epoch)
         img_starting_params = img_expert_trajectory[start_epoch]
-        txt_starting_params = txt_expert_trajectory[start_epoch]
+        map_starting_params = map_expert_trajectory[start_epoch]
 
         img_target_params = img_expert_trajectory[start_epoch+args.expert_epochs]
-        txt_target_params = txt_expert_trajectory[start_epoch+args.expert_epochs]
+        map_target_params = map_expert_trajectory[start_epoch+args.expert_epochs]
 
         img_target_params = torch.cat([p.data.to(args.device).reshape(-1) for p in img_target_params], 0)
-        txt_target_params = torch.cat([p.data.to(args.device).reshape(-1) for p in txt_target_params], 0)
+        map_target_params = torch.cat([p.data.to(args.device).reshape(-1) for p in map_target_params], 0)
 
         img_student_params = [torch.cat([p.data.to(args.device).reshape(-1) for p in img_starting_params], 0).requires_grad_(True)]
-        txt_student_params = [torch.cat([p.data.to(args.device).reshape(-1) for p in txt_starting_params], 0).requires_grad_(True)]
+        map_student_params = [torch.cat([p.data.to(args.device).reshape(-1) for p in map_starting_params], 0).requires_grad_(True)]
 
         img_starting_params = torch.cat([p.data.to(args.device).reshape(-1) for p in img_starting_params], 0)
-        txt_starting_params = torch.cat([p.data.to(args.device).reshape(-1) for p in txt_starting_params], 0)
+        map_starting_params = torch.cat([p.data.to(args.device).reshape(-1) for p in map_starting_params], 0)
         syn_images = image_syn
-        syn_texts = text_syn
+        syn_maps = map_syn
 
         img_param_loss_list = []
-        txt_param_loss_list = []
+        map_param_loss_list = []
 
         img_param_dist_list = []
-        txt_param_dist_list = []
+        map_param_dist_list = []
 
         indices_chunks = []
         for step in range(args.syn_steps): 
@@ -440,79 +484,88 @@ def main(args):
             these_indices = indices[:args.mini_batch_size]
             #these_indices = indices
             x = syn_images[these_indices]
-            this_y = syn_texts[these_indices]
+            this_y = syn_maps[these_indices]
             if args.distributed:
                 img_forward_params = img_student_params[-1].unsqueeze(0).expand(torch.cuda.device_count(), -1)
-                txt_forward_params = txt_student_params[-1].unsqueeze(0).expand(torch.cuda.device_count(), -1)
+                map_forward_params = map_student_params[-1].unsqueeze(0).expand(torch.cuda.device_count(), -1)
             else:
                 img_forward_params = img_student_params[-1]
-                txt_forward_params = txt_student_params[-1]
+                map_forward_params = map_student_params[-1]
 
             x = img_student_net(x, flat_param=img_forward_params)
             x = x / x.norm(dim=1, keepdim=True)
-            this_y = txt_student_net(this_y, flat_param=txt_forward_params)
+            #import pdb; pdb.set_trace()
+            this_y = map_student_net(this_y, flat_param=map_forward_params)
             this_y = this_y / this_y.norm(dim=1, keepdim=True)
             image_logits = logit_scale * x.float() @ this_y.float().t() 
             ground_truth = torch.arange(len(image_logits)).type_as(image_logits).long()
             contrastive_loss = (F.cross_entropy(image_logits, ground_truth) + F.cross_entropy(image_logits.t(), ground_truth))/2
             
             img_grad = torch.autograd.grad(contrastive_loss, img_student_params[-1], create_graph=True)[0]
-            txt_grad = torch.autograd.grad(contrastive_loss, txt_student_params[-1], create_graph=True)[0]
+            map_grad = torch.autograd.grad(contrastive_loss, map_student_params[-1], create_graph=True)[0]
             print(contrastive_loss)
+            print(img_grad)
+            print(map_grad)
             img_student_params.append(img_student_params[-1] - syn_lr_img * img_grad) 
-            txt_student_params.append(txt_student_params[-1] - syn_lr_txt * txt_grad)
+            map_student_params.append(map_student_params[-1] - syn_lr_map * map_grad)
         img_param_loss = torch.tensor(0.0).to(args.device)
         img_param_dist = torch.tensor(0.0).to(args.device)
-        txt_param_loss = torch.tensor(0.0).to(args.device)
-        txt_param_dist = torch.tensor(0.0).to(args.device)
+        map_param_loss = torch.tensor(0.0).to(args.device)
+        map_param_dist = torch.tensor(0.0).to(args.device)
 
 
         img_param_loss += torch.nn.functional.mse_loss(img_student_params[-1], img_target_params, reduction="sum")
         img_param_dist += torch.nn.functional.mse_loss(img_starting_params, img_target_params, reduction="sum")
-        txt_param_loss += torch.nn.functional.mse_loss(txt_student_params[-1], txt_target_params, reduction="sum")
-        txt_param_dist += torch.nn.functional.mse_loss(txt_starting_params, txt_target_params, reduction="sum")
+        map_param_loss += torch.nn.functional.mse_loss(map_student_params[-1], map_target_params, reduction="sum")
+        map_param_dist += torch.nn.functional.mse_loss(map_starting_params, map_target_params, reduction="sum")
+        
+        print(map_param_loss)
+        print(map_param_dist)
 
         img_param_loss_list.append(img_param_loss)
         img_param_dist_list.append(img_param_dist)
-        txt_param_loss_list.append(txt_param_loss)
-        txt_param_dist_list.append(txt_param_dist)
+        map_param_loss_list.append(map_param_loss)
+        map_param_dist_list.append(map_param_dist)
         
 
         img_param_loss /= img_param_dist
-        txt_param_loss /= txt_param_dist
-        grand_loss = img_param_loss + txt_param_loss
+        #map_param_loss /= map_param_dist
+
+        print(map_param_loss)
+
+        grand_loss = img_param_loss + map_param_loss
 
         if math.isnan(img_param_loss):
             break
         print("img_param_loss: {}".format(img_param_loss))
-        print("txt_param_loss: {}".format(txt_param_loss))
+        print("map_param_loss: {}".format(map_param_loss))
 
         optimizer_lr.zero_grad()
         optimizer_img.zero_grad()
-        optimizer_txt.zero_grad()
+        optimizer_map.zero_grad()
         
         grand_loss.backward()
         # clip_value = 0.5
         
         #torch.nn.utils.clip_grad_norm_([image_syn], clip_value)
-        #torch.nn.utils.clip_grad_norm_([text_syn], clip_value)
+        #torch.nn.utils.clip_grad_norm_([map_syn], clip_value)
         #torch.nn.utils.clip_grad_norm_([syn_lr_img], clip_value)
-        #torch.nn.utils.clip_grad_norm_([syn_lr_txt], clip_value)
+        #torch.nn.utils.clip_grad_norm_([syn_lr_map], clip_value)
         print("syn_lr_img: {}".format(syn_lr_img.grad))
-        print("syn_lr_txt: {}".format(syn_lr_txt.grad))
-        wandb.log({"syn_lr_img": syn_lr_img.grad.detach().cpu()}, step=it)
-        wandb.log({"syn_lr_txt": syn_lr_txt.grad.detach().cpu()}, step=it)
+        print("syn_lr_map: {}".format(syn_lr_map.grad))
+        wandb.log({"syn_lr_img": syn_lr_img.grad.detach().cpu()})
+        wandb.log({"syn_lr_map": syn_lr_map.grad.detach().cpu()})
 
         optimizer_lr.step()
         optimizer_img.step()
-        optimizer_txt.step()
+        optimizer_map.step()
 
         wandb.log({"Grand_Loss": grand_loss.detach().cpu(),
                    "Start_Epoch": start_epoch})
 
         for _ in img_student_params:
             del _
-        for _ in txt_student_params:
+        for _ in map_student_params:
             del _
 
         if it%10 == 0:
@@ -524,8 +577,8 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Parameter Processing')
 
-    parser.add_argument('--dataset', type=str, default='flickr30k', help='dataset')
-    parser.add_argument('--ipc', type=int, default=1, help='image(s) per class')
+    parser.add_argument('--dataset', type=str, default='cifar10', help='dataset')
+    parser.add_argument('--ipc', type=int, default=10, help='image(s) per class')
 
     parser.add_argument('--eval_mode', type=str, default='S',
                         help='eval_mode, check utils.py for more info')
@@ -541,7 +594,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr_txt', type=float, default=1000, help='learning rate for updating synthetic texts')
     parser.add_argument('--lr_lr', type=float, default=1e-03, help='learning rate for updating... learning rate')
     parser.add_argument('--lr_teacher_img', type=float, default=0.1, help='learning rate for updating network parameters')
-    parser.add_argument('--lr_teacher_txt', type=float, default=0.1, help='learning rate for updating network parameters')
+    parser.add_argument('--lr_teacher_map', type=float, default=0.1, help='learning rate for updating network parameters')
     
     parser.add_argument('--batch_train', type=int, default=64, help='batch size for training networks')
 
@@ -557,7 +610,7 @@ if __name__ == '__main__':
                         help='differentiable Siamese augmentation strategy')
 
     parser.add_argument('--data_path', type=str, default='./data/Flickr30k/', help='dataset path')
-    parser.add_argument('--buffer_path', type=str, default='./buffers', help='buffer path')
+    parser.add_argument('--buffer_path', type=str, default='./buffers_1108/cifar10/nf_resnet50', help='buffer path')
 
     parser.add_argument('--expert_epochs', type=int, default=3, help='how many expert epochs the target params are')
     parser.add_argument('--syn_steps', type=int, default=20, help='how many steps to take on synthetic data')
@@ -591,7 +644,7 @@ if __name__ == '__main__':
     parser.add_argument('--ann_root', type=str, default='./Flickr30k/ann_file/', help='location of ann root')
     parser.add_argument('--batch_size_train', type=int, default=128, help='batch_size_train')
     parser.add_argument('--batch_size_test', type=int, default=128, help='batch_size_test')
-    parser.add_argument('--image_encoder', type=str, default='nfnet', choices=['clip', 'nfnet', 'vit', 'nf_resnet50'],  help='image encoder')
+    parser.add_argument('--image_encoder', type=str, default='nf_resnet50', choices=['resnet18', 'clip', 'nfnet', 'vit', 'nf_resnet50'],  help='image encoder')
     parser.add_argument('--text_encoder', type=str, default='bert', choices=['bert', 'clip'], help='text encoder')
     parser.add_argument('--text_pretrained', type=bool, default=True, help='text_pretrained')
     parser.add_argument('--image_pretrained', type=bool, default=True, help='image_pretrained')

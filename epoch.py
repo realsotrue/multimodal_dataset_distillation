@@ -17,7 +17,7 @@ import torch.nn as nn
 from utils import *
 
 
-def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
+def epoch(e, dataloader, net, optimizer_img, optimizer_map, args):
     """
     Perform a training epoch on the given dataloader.
 
@@ -25,7 +25,7 @@ def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
         dataloader (torch.utils.data.DataLoader): The dataloader for iterating over the dataset.
         net: The model.
         optimizer_img: The optimizer for image parameters.
-        optimizer_txt: The optimizer for text parameters.
+        optimizer_map: The optimizer for map parameters.
         args (object): The arguments specifying the training configuration.
 
     Returns:
@@ -36,25 +36,31 @@ def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
     loss_avg, acc_avg, num_exp = 0, 0, 0
 
     for i, data in tqdm(enumerate(dataloader)):
-        if args.distill:
-            image, caption = data[:2]
-        else:
-            image, caption, index = data[:3]
+        #if args.distill:
+        #    image, caption = data[:2]
+        #else:
+        #    image, caption, index = data[:3]
+        
+        image, map = data[:2]
 
         image = image.to(args.device)
         n_b = image.shape[0]
 
-        loss, acc = net(image, caption, e)
+        map = map.to(args.device)
+        n__map = map.shape[0]
+
+        loss, acc = net(image, map, e)
 
         loss_avg += loss.item() * n_b
         acc_avg += acc
         num_exp += n_b
 
         optimizer_img.zero_grad()
-        optimizer_txt.zero_grad()
+        optimizer_map.zero_grad()
         loss.backward()
+        print(loss)
         optimizer_img.step()
-        optimizer_txt.step()
+        optimizer_map.step()
 
     loss_avg /= num_exp
     acc_avg /= num_exp

@@ -792,3 +792,7 @@ class CLIPModel_full(nn.Module):
         acc_t = (torch.argmax(image_logits, 0) == ground_truth).sum().item()
         acc = (acc_i + acc_t) / 2
         return loss, acc
+    
+
+
+ 
