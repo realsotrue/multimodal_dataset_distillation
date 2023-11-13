@@ -654,7 +654,8 @@ class ImageEncoder(nn.Module):
         super().__init__()
         self.model_name = args.image_encoder
         self.pretrained = args.image_pretrained
-        self.trainable = args.image_trainable
+        #self.trainable = args.image_trainable
+        self.trainable = True #true로 고정
 
         if self.model_name == 'clip':
             if self.pretrained:
@@ -824,9 +825,12 @@ class Our_Model_full(nn.Module):
         else:
             raise NotImplementedError
         
-        self.image_encoder =  ImageEncoder(args, eval_stage=eval_stage)
-        self.map_encoder =  ImageEncoder(args, eval_stage=eval_stage)
+        #self.image_encoder =  ImageEncoder(args, eval_stage=eval_stage)
+        #self.map_encoder =  ImageEncoder(args, eval_stage=eval_stage)
         #self.text_encoder = TextEncoder(args)
+
+        self.image_encoder =  ImageEncoder(args)
+        self.map_encoder =  ImageEncoder(args)
 
         if args.only_has_image_projection:
             self.image_projection = ProjectionHead(embedding_dim=self.image_embedding)
@@ -835,15 +839,25 @@ class Our_Model_full(nn.Module):
         self.temperature = temperature
         #self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.args = args
-        self.distill = args.distill
+        #self.distill = args.distill
 
-    def forward(self, image, caption, epoch):
+    def register_gradient_hook(self):
+        def gradient_hook(grad):
+            print(grad)
+
+        for name, param in self.named_parameters():
+            if "map" in name:
+                param.register_hook(lambda grad, name=name: print(f"Gradient of {name}: {grad}"))  
+    
+
+
+    def forward(self, image, map, epoch):
         self.image_encoder = self.image_encoder.to('cuda')
-        self.map_encoder = self.image_encoder.to('cuda')
+        self.map_encoder = self.map_encoder.to('cuda')
         #self.text_encoder = self.text_encoder.to('cuda')
         
         image_features = self.image_encoder(image)
-        map_features = self.map_encoder(image)
+        map_features = self.map_encoder(map)
         #text_features = caption if self.distill else self.text_encoder(caption) 
 
         use_image_project = False

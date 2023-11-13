@@ -529,7 +529,7 @@ def main(args):
         
 
         img_param_loss /= img_param_dist
-        #map_param_loss /= map_param_dist
+        map_param_loss /= map_param_dist
 
         print(map_param_loss)
 
@@ -644,7 +644,8 @@ if __name__ == '__main__':
     parser.add_argument('--ann_root', type=str, default='./Flickr30k/ann_file/', help='location of ann root')
     parser.add_argument('--batch_size_train', type=int, default=128, help='batch_size_train')
     parser.add_argument('--batch_size_test', type=int, default=128, help='batch_size_test')
-    parser.add_argument('--image_encoder', type=str, default='nf_resnet50', choices=['resnet18', 'clip', 'nfnet', 'vit', 'nf_resnet50'],  help='image encoder')
+    parser.add_argument('--image_encoder', type=str, default='resnet18', choices=['resnet18', 'clip', 'nfnet', 'vit', 'nf_resnet50'],  help='image encoder')
+    parser.add_argument('--map_encoder', type=str, default='resnet18', choices=['resnet18','nfnet', 'resnet18_gn', 'vit_tiny', 'nf_resnet50', 'nf_regnet'],  help='image encoder')
     parser.add_argument('--text_encoder', type=str, default='bert', choices=['bert', 'clip'], help='text encoder')
     parser.add_argument('--text_pretrained', type=bool, default=True, help='text_pretrained')
     parser.add_argument('--image_pretrained', type=bool, default=True, help='image_pretrained')

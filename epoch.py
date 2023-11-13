@@ -17,6 +17,7 @@ import torch.nn as nn
 from utils import *
 
 
+
 def epoch(e, dataloader, net, optimizer_img, optimizer_map, args):
     """
     Perform a training epoch on the given dataloader.
@@ -32,8 +33,11 @@ def epoch(e, dataloader, net, optimizer_img, optimizer_map, args):
         Tuple of average loss and average accuracy.
     """
     net = net.to(args.device)
+    net.register_gradient_hook()
     net.train()
     loss_avg, acc_avg, num_exp = 0, 0, 0
+
+
 
     for i, data in tqdm(enumerate(dataloader)):
         #if args.distill:
@@ -57,10 +61,17 @@ def epoch(e, dataloader, net, optimizer_img, optimizer_map, args):
 
         optimizer_img.zero_grad()
         optimizer_map.zero_grad()
+
         loss.backward()
         print(loss)
+
+        #클리핑 써야될듯
+        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2)
+
         optimizer_img.step()
         optimizer_map.step()
+
+        import pdb; pdb.set_trace()
 
     loss_avg /= num_exp
     acc_avg /= num_exp

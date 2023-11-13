@@ -78,7 +78,7 @@ def main(args):
     dataset = DualImageFolderDataset(folder1_path='../seg/images_modified_1102_1000/original', 
                                  folder2_path='../seg/images_modified_1102_1000/attention', 
                                  transform=transforms.ToTensor())
-    trainloader = DataLoader(dataset, batch_size=128, shuffle=True)
+    trainloader = DataLoader(dataset, batch_size=512, shuffle=True) # 배치 사이즈 더 늘림
     #data = np.load(f'{args.dataset}_{args.text_encoder}_text_embed.npz') #수정
     #bert_test_embed_loaded = data['bert_test_embed'] #수정
     #bert_test_embed = torch.from_numpy(bert_test_embed_loaded).cpu() #수정
@@ -200,6 +200,7 @@ if __name__ == '__main__':
     parser.add_argument('--k_test', type=int, default=128, help='k_test')
     parser.add_argument('--load_npy', type=bool, default=False, help='load_npy')
     parser.add_argument('--image_encoder', type=str, default='resnet18', choices=['resnet18','nfnet', 'resnet18_gn', 'vit_tiny', 'nf_resnet50', 'nf_regnet'],  help='image encoder')
+    parser.add_argument('--map_encoder', type=str, default='resnet18', choices=['resnet18','nfnet', 'resnet18_gn', 'vit_tiny', 'nf_resnet50', 'nf_regnet'],  help='image encoder')
     parser.add_argument('--text_encoder', type=str, default='bert', choices=['bert', 'clip'], help='text encoder')
     parser.add_argument('--margin', default=0.2, type=float,
                         help='Rank loss margin.')
@@ -207,7 +208,7 @@ if __name__ == '__main__':
                     help='Similarity measure used (cosine|order)')
     parser.add_argument('--max_violation', action='store_true',
                         help='Use max instead of sum in the rank loss.')
-    parser.add_argument('--only_has_image_projection', type=bool, default=False, help='None')
+    parser.add_argument('--only_has_image_projection', type=bool, default=True, help='None')
     parser.add_argument('--grounding', type=bool, default=False, help='None')
                         
     args = parser.parse_args()
