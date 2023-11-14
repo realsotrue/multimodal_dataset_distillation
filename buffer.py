@@ -119,7 +119,59 @@ def main(args):
         lr_schedule = [args.train_epochs // 2 + 1]
 
         for e in range(args.train_epochs):
-            train_loss, train_acc = epoch(e, trainloader, teacher_net, teacher_optim_img, teacher_optim_map, args)
+            #train_loss, train_acc = epoch(e, trainloader, teacher_net, teacher_optim_img, teacher_optim_map,img_teacher_net,map_teacher_net, args) #ecoder net 추가
+            
+            #teacher_net = teacher_net.to(args.device)
+            teacher_net.register_gradient_hook()
+            teacher_net.train()
+            loss_avg, acc_avg, num_exp = 0, 0, 0
+
+
+
+            for i, data in tqdm(enumerate(trainloader)):
+                #if args.distill:
+                #    image, caption = data[:2]
+                #else:
+                #    image, caption, index = data[:3]
+                
+                image, map = data[:2]
+
+                image = image.to(args.device)
+                n_b = image.shape[0]
+
+                map = map.to(args.device)
+                n__map = map.shape[0]
+
+                loss, acc = teacher_net(image, map, e)
+
+                loss_avg += loss.item() * n_b
+                acc_avg += acc
+                num_exp += n_b
+
+
+
+
+                teacher_optim_img.zero_grad()
+                teacher_optim_map.zero_grad()
+
+
+                loss.backward()
+                print(loss)
+
+                #클리핑 써야될듯
+                torch.nn.utils.clip_grad_norm_(img_teacher_net.parameters(), max_norm=1)
+                torch.nn.utils.clip_grad_norm_(map_teacher_net.parameters(), max_norm=1)
+
+
+                teacher_optim_img.step()
+                teacher_optim_map.step()
+
+                import pdb; pdb.set_trace()
+
+            loss_avg /= num_exp
+            acc_avg /= num_exp
+            
+            
             print(f'{e} epoch running')
             #score_val_i2t, score_val_t2i = epoch_test(testloader, teacher_net, args.device, bert_test_embed)
             #val_result = itm_eval(score_val_i2t, score_val_t2i, testloader.dataset.txt2img, testloader.dataset.img2txt)  #수정
@@ -171,8 +223,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Parameter Processing')
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10','flickr', 'coco'], help='dataset')
     parser.add_argument('--num_experts', type=int, default=2, help='training iterations')
-    parser.add_argument('--lr_teacher_img', type=float, default=0.1, help='learning rate for updating network parameters')
-    parser.add_argument('--lr_teacher_map', type=float, default=0.1, help='learning rate for updating network parameters')
+    parser.add_argument('--lr_teacher_img', type=float, default=0.01, help='learning rate for updating network parameters')
+    parser.add_argument('--lr_teacher_map', type=float, default=0.01, help='learning rate for updating network parameters')
     parser.add_argument('--batch_train', type=int, default=128, help='batch size for training networks')
     parser.add_argument('--dsa', type=str, default='False', choices=['True', 'False'],
                         help='whether to use differentiable Siamese augmentation.')

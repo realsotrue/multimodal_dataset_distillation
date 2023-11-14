@@ -18,7 +18,7 @@ from utils import *
 
 
 
-def epoch(e, dataloader, net, optimizer_img, optimizer_map, args):
+def epoch(e, dataloader, net, optimizer_img, optimizer_map, img_teacher_net, map_teacher_net,args):
     """
     Perform a training epoch on the given dataloader.
 
@@ -66,7 +66,9 @@ def epoch(e, dataloader, net, optimizer_img, optimizer_map, args):
         print(loss)
 
         #클리핑 써야될듯
-        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2)
+        torch.nn.utils.clip_grad_norm_(img_teacher_net.parameters(), max_norm=1)
+        torch.nn.utils.clip_grad_norm_(map_teacher_net.parameters(), max_norm=1)
+
 
         optimizer_img.step()
         optimizer_map.step()
