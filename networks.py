@@ -648,12 +648,17 @@ class ProjectionHead(nn.Module):
 class ImageEncoder(nn.Module):
     """
     Encode images to a fixed size vector
+
+    map arg added to make map encoder untrained
     """
 
-    def __init__(self, args):
+    def __init__(self, ismap ,args):
         super().__init__()
         self.model_name = args.image_encoder
-        self.pretrained = args.image_pretrained
+        if ismap:
+            self.pretrained = args.map_pretrained
+        else:
+            self.pretrained = args.image_pretrained
         #self.trainable = args.image_trainable
         self.trainable = True #true로 고정
 
@@ -829,8 +834,8 @@ class Our_Model_full(nn.Module):
         #self.map_encoder =  ImageEncoder(args, eval_stage=eval_stage)
         #self.text_encoder = TextEncoder(args)
 
-        self.image_encoder =  ImageEncoder(args)
-        self.map_encoder =  ImageEncoder(args)
+        self.image_encoder =  ImageEncoder(False, args)
+        self.map_encoder =  ImageEncoder(True, args)
 
         if args.only_has_image_projection:
             self.image_projection = ProjectionHead(embedding_dim=self.image_embedding)

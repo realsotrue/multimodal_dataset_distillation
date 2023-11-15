@@ -240,7 +240,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_interval', type=int, default=10)
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     parser.add_argument('--name', type=str, default=current_time, help='name of wandb run')
-    parser.add_argument('--text_pretrained', type=bool, default=True, help='text_pretrained')
+    parser.add_argument('--map_pretrained', type=bool, default=False, help='map_pretrained') #false로 바꿔둠
     parser.add_argument('--image_pretrained', type=bool, default=True, help='image_pretrained')
     parser.add_argument('--text_trainable', type=bool, default=False, help='text_trainable')
     parser.add_argument('--image_trainable', type=bool, default=True, help='image_trainable') 
